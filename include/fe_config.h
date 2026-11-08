@@ -55,10 +55,22 @@ constexpr uint32_t kDelayNoCartRamUs    = 1200000;
 // gb_error_delay_us at 0x42000128 (0x5E9AC0).
 constexpr uint32_t kDelayGbErrorUs      = 6200000;
 
-// Frame period: 1e6 / 59.94 = 16675 us. The original firmware also applies
-// a 0.8 sleep scale when the measured frame time is high.
+// Adaptive frame pacing (fe_emulator_main, 0x42012638-0x420127ef).
+//
+// Every pass measures how long the iteration took and derives a signed
+// "budget": how many microseconds are still available in the 16675 us frame.
+// A positive budget is spent with a fractional sleep (at most 75 % of it per
+// pass, so usleep overshoot is corrected), and the remainder is carried into
+// the next pass.  A budget below -16675 means the loop is more than one frame
+// behind and the firmware runs an extra undisplayed frame to catch up.
+//
+// Frame period: 1e6 / 59.94 = 16675 us.
 constexpr double   kFramePeriodUs       = 16675.0;
 constexpr double   kSleepScale          = 0.8;
+constexpr float    kFrameSleepFraction  = 0.75f;
+constexpr int32_t  kFrameSleepTrigUs    = 150;      // budget > 150 -> sleep
+constexpr int32_t  kFrameCatchupUs      = -16675;   // budget < -16675 -> extra frame
+constexpr int32_t  kFrameTimeMinUs      = -50025;   // sleep accumulator floor
 constexpr uint32_t kFrameTimeThreshold  = 1000;
 
 // ---------------------------------------------------------------------------

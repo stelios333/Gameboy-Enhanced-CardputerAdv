@@ -13,6 +13,8 @@
 #include "fe_ui.h"
 #include "fe_state.h"
 #include "fe_settings.h"
+#include "fe_marquee.h"
+#include "fe_display.h"
 
 namespace fe {
 
@@ -33,41 +35,72 @@ bool isRomName(const String& name)
 }
 
 void drawPicker(const String& dir, const std::vector<String>& names,
-                const std::vector<bool>& isDir, int selected)
+                const std::vector<bool>& isDir, int selected,
+                Marquee& marquee)
 {
-    M5Cardputer.Display.clearDisplay();
-    M5Cardputer.Display.setTextColor(0xFFFF);
-    setFontSize(80);
+    auto& d = M5Cardputer.Display;
 
-    M5Cardputer.Display.drawString(" /\\ \\/ TO NAVIGATE | ENTER TO LOAD", 2, 0);
-    M5Cardputer.Display.drawString(" PRESS ESC OR ' KEY FOR SETTINGS MENU", 2, 124);
+    // Same chrome as fe_settings_menu: black clear, rgb888(0x00032303)
+    // header/footer, black shadow text at (3,0)/(3,124), white copy at
+    // (4,1)/(4,125), white rules at y=11 and y=123.
+    d.fillRect(0, 0, kDisplayWidth, kFbHeight, 0x0000);
 
-    const int visible = 5;
-    int first = selected - visible / 2;
-    if (first < 0) first = 0;
-    if (first + visible > static_cast<int>(names.size())) {
-        first = std::max(0, static_cast<int>(names.size()) - visible);
-    }
+    d.fillRect(0, 0, kDisplayWidth, 10, rgb888ToRgb565(0x00032303));
+    setTextScale(1);
+    d.setTextColor(0x0000);
+    d.drawString("  /\\ \\/ TO NAVIGATE | ENTER TO LOAD", 3, 0);
+    d.setTextColor(0xFFFF);
+    d.drawString("  /\\ \\/ TO NAVIGATE | ENTER TO LOAD", 4, 1);
+    d.drawFastHLine(0, 11, kDisplayWidth, 0xFFFF);
 
-    for (int i = 0; i < visible; i++) {
-        const int index = first + i;
-        if (index >= static_cast<int>(names.size())) {
-            break;
+    d.fillRect(0, 123, kDisplayWidth, 12, rgb888ToRgb565(0x00032303));
+    d.setTextColor(0x0000);
+    d.drawString(" PRESS ESC OR ' KEY FOR SETTINGS MENU ", 3, 124);
+    d.setTextColor(0xFFFF);
+    d.drawString(" PRESS ESC OR ' KEY FOR SETTINGS MENU ", 4, 125);
+    d.drawFastHLine(0, 123, kDisplayWidth, 0xFFFF);
+
+    const int height = d.height();
+    const int count  = static_cast<int>(names.size());
+
+    auto drawItem = [&](int index, int lineOffset) {
+        if (index < 0 || index >= count) {
+            return;
         }
-        const int y = 20 + i * 20;
-        if (index == selected) {
-            M5Cardputer.Display.fillRect(0, y - 2, 240, 18, 0x8410);
-            M5Cardputer.Display.setTextColor(0x0000);
-            M5Cardputer.Display.drawString(">", 4, y);
+        const bool directory = isDir[index];
+        const bool highlight = (lineOffset == 0);
+        const int fontSize = highlight ? 0x3c : 0x60;
+        setFontSize(fontSize);
+        const int w = textWidth(names[index].c_str());
+        const int h = d.fontHeight();
+        const int y = (lineOffset == 0)
+                          ? height / 2 - h / 2
+                          : height / 2 - h / 2 + lineOffset * h;
+        if (highlight) {
+            // Long selected names start at their left-most position and then
+            // scroll in the idle loop (see marqueeStep).
+            marqueeReset(marquee, w);
+            d.fillRect(0, y - 2, kDisplayWidth, h + 4,
+                       rgb888ToRgb565(0x00111111));
+        }
+        uint32_t color;
+        if (highlight) {
+            color = directory ? 0x00FFFF00 : 0x00FFFFFF;
         } else {
-            M5Cardputer.Display.setTextColor(0xFFFF);
+            color = directory ? 0x00AAAA00 : 0x00AAAAAA;
         }
-        String label = names[index];
-        if (isDir[index]) {
-            label = String("[") + label + "]";
-        }
-        M5Cardputer.Display.drawString(label.c_str(), 18, y);
-    }
+        d.setTextColor(rgb888ToRgb565(color));
+        d.drawString(names[index].c_str(),
+                     120 + (highlight ? marquee.scroll : 0) - w / 2, y);
+    };
+
+    // The picker is a five-entry carousel: +/-1 sit three text lines from the
+    // centre and +/-2 sit five lines out.
+    drawItem(selected - 2, -5);
+    drawItem(selected + 2, +5);
+    drawItem(selected - 1, -3);
+    drawItem(selected + 1, +3);
+    drawItem(selected, 0);
 }
 
 }  // namespace
@@ -148,13 +181,17 @@ void filePicker(char* out, size_t outSize)
         if (selected < 0) selected = static_cast<int>(names.size()) - 1;
         if (selected >= static_cast<int>(names.size())) selected = 0;
 
-        drawPicker(currentDir, names, isDir, selected);
+        Marquee pickerMarquee;
+        drawPicker(currentDir, names, isDir, selected, pickerMarquee);
         waitKeyRelease();
 
         bool done = false;
         while (!done) {
             M5Cardputer.update();
             if (!M5Cardputer.Keyboard.isPressed()) {
+                // Animate a long selected name while the picker is idle.
+                marqueeStep(pickerMarquee, names[selected].c_str(),
+                            isDir[selected] ? 0x00FFFF00 : 0x00FFFFFF);
                 continue;
             }
             auto& state = M5Cardputer.Keyboard.keysState();
@@ -189,13 +226,13 @@ void filePicker(char* out, size_t outSize)
             }
 
             for (char key : state.word) {
-                if (key == ';' || key == 'e') {
+                if (key == ';' || key == static_cast<char>(gSettings.keyUp)) {
                     selected--;
                     delay(kDelayKeyRepeatUs / 1000);
                     done = true;
                     break;
                 }
-                if (key == '.' || key == 's') {
+                if (key == '.' || key == static_cast<char>(gSettings.keyDown)) {
                     selected++;
                     delay(kDelayKeyRepeatUs / 1000);
                     done = true;

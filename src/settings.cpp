@@ -9,6 +9,7 @@
 #include "fe_settings.h"
 #include "fe_state.h"
 #include "fe_ui.h"
+#include "fe_marquee.h"
 #include "fe_display.h"
 #include "fe_audio.h"
 
@@ -72,9 +73,10 @@ void settingsRestoreDefaults()
     gSettings.keyStart    = kDefaultKeyStart;
     gSettings.keySelect   = kDefaultKeySelect;
     // The firmware's RESTORE DEFAULTS handler (0x4201019d) writes FULL for the
-    // interlace setting, Pocket for the palette, MANUAL for the SGB border,
-    // and resets legacy flags / bass boost plus the runtime APU volume to 0x14.
-    // I2C joystick and the startup 12-colour flag are left untouched.
+    // interlace setting, palette index 2 (Default) for PALETTE START, MANUAL
+    // for the SGB border, and resets the legacy flags / bass boost plus the
+    // runtime APU volume to 0x14.  I2C joystick, CPU mode and the startup
+    // compatibility flag are left untouched.
     gSettings.gfxInterlace = static_cast<uint8_t>(GfxInterlace::Full);
     gSettings.paletteStart = static_cast<uint8_t>(PalettePreset::Default);
     gSettings.sgbBorder = static_cast<uint8_t>(SgbBorderMode::Manual);
@@ -254,11 +256,10 @@ void settingsFormatValue(char* out, size_t outSize, const char* name, int index)
         break;
     }
     case 14: {
-        // fe_settings_format_value: COMPATIBLE when the per-game profile
-        // forced compatibility, otherwise FASTEST when the context flag at
-        // gb_s+? (p_fe_settings+7) is 0, else FAST.
+        // fe_settings_format_value: startup palette != 0 -> COMPATIBLE,
+        // otherwise the p_fe_settings+7 fast flag selects FASTEST, else FAST.
         const char* value = "FAST";
-        if (gSettings.forceCompat) {
+        if (gSettings.startupPalette) {
             value = "COMPATIBLE";
         } else if (gSettings.cpuMode == static_cast<uint8_t>(CpuMode::Fastest)) {
             value = "FASTEST";
@@ -284,39 +285,74 @@ void settingsFormatValue(char* out, size_t outSize, const char* name, int index)
 // ---------------------------------------------------------------------------
 namespace {
 
-void drawMenu(int selected, int itemCount)
+void drawMenu(int selected, int itemCount, Marquee& marquee)
 {
-    M5Cardputer.Display.clearDisplay();
-    M5Cardputer.Display.fillRect(0, 0, 240, 12, 0x2104);
-    M5Cardputer.Display.setTextColor(0xFFFF);
-    setFontSize(128);
-    M5Cardputer.Display.drawString(" /\\ \\/ TO NAVIGATE | ENTER TO SELECT", 2, 1);
+    auto& d = M5Cardputer.Display;
 
-    setFontSize(0x3c);
+    // fe_settings_menu clears the panel, paints a 10 px header and a 12 px
+    // footer in rgb888(0x00032303), gives both a black drop shadow at (3,0)
+    // / (3,124) plus a white copy at (4,1) / (4,125), and separates them with
+    // white 240 px rules at y=11 and y=123.
+    d.fillRect(0, 0, kDisplayWidth, kFbHeight, 0x0000);
 
-    const int visible = 5;
-    int first = selected - visible / 2;
-    if (first < 0) first = 0;
-    if (first + visible > itemCount) first = itemCount - visible;
+    d.fillRect(0, 0, kDisplayWidth, 10, rgb888ToRgb565(0x00032303));
+    setFontSize(0x80);
+    d.setTextColor(0x0000);
+    d.drawString(" /\\ \\/ TO NAVIGATE | ENTER TO SELECT", 3, 0);
+    d.setTextColor(0xFFFF);
+    d.drawString(" /\\ \\/ TO NAVIGATE | ENTER TO SELECT", 4, 1);
+    d.drawFastHLine(0, 11, kDisplayWidth, 0xFFFF);
 
-    for (int i = 0; i < visible; i++) {
-        const int index = first + i;
-        const int y = 24 + i * 20;
-        char value[64];
-        settingsFormatValue(value, sizeof(value), kSettingsMenuItems[index], index);
+    d.fillRect(0, 123, kDisplayWidth, 12, rgb888ToRgb565(0x00032303));
+    setFontSize(0x80);
+    d.setTextColor(0x0000);
+    d.drawString(" PRESS ESC OR ' KEY TO CLOSE SETTINGS ", 3, 124);
+    d.setTextColor(0xFFFF);
+    d.drawString(" PRESS ESC OR ' KEY TO CLOSE SETTINGS ", 4, 125);
+    d.drawFastHLine(0, 123, kDisplayWidth, 0xFFFF);
 
-        if (index == selected) {
-            M5Cardputer.Display.fillRect(0, y - 2, 240, 18, 0x8410);
-            M5Cardputer.Display.setTextColor(0x0000);
-        } else {
-            M5Cardputer.Display.setTextColor(0xFFFF);
-        }
-        const int textX = 120 - textWidth(value) / 2;
-        M5Cardputer.Display.drawString(value, textX, y);
+    const int height = d.height();
+    char value[80];
+
+    // The firmware shows exactly three entries: the selection in the centre
+    // (setFontSize(0x3c), white, on a rgb888(0x111111) highlight) and its
+    // immediate neighbours (setFontSize(0x60), rgb888(0xAAAAAA)) at +/- 3
+    // line heights.
+    if (selected > 0) {
+        settingsFormatValue(value, sizeof(value),
+                            kSettingsMenuItems[selected - 1], selected - 1);
+        setFontSize(0x60);
+        const int w = textWidth(value);
+        const int h = d.fontHeight();
+        const int y = height / 2 - h / 2 - 3 * h;
+        d.setTextColor(rgb888ToRgb565(0xAAAAAA));
+        d.drawString(value, 120 - w / 2, y);
     }
 
-    M5Cardputer.Display.setTextColor(0xFFFF);
-    M5Cardputer.Display.drawString(" PRESS ESC OR ' KEY TO CLOSE SETTINGS ", 2, 124);
+    settingsFormatValue(value, sizeof(value), kSettingsMenuItems[selected], selected);
+    setFontSize(0x3c);
+    {
+        const int w = textWidth(value);
+        const int h = d.fontHeight();
+        const int y = height / 2 - h / 2;
+        // The firmware rewinds the marquee whenever the menu is redrawn and
+        // starts long selections at their left-most position, scrolling left.
+        marqueeReset(marquee, w);
+        d.fillRect(0, y - 2, kDisplayWidth, h + 4, rgb888ToRgb565(0x00111111));
+        d.setTextColor(0xFFFF);
+        d.drawString(value, 120 + marquee.scroll - w / 2, y);
+    }
+
+    if (selected + 1 < itemCount) {
+        settingsFormatValue(value, sizeof(value),
+                            kSettingsMenuItems[selected + 1], selected + 1);
+        setFontSize(0x60);
+        const int w = textWidth(value);
+        const int h = d.fontHeight();
+        const int y = height / 2 - h / 2 + 3 * h;
+        d.setTextColor(rgb888ToRgb565(0xAAAAAA));
+        d.drawString(value, 120 - w / 2, y);
+    }
 }
 
 void rebindKey(uint8_t& target)
@@ -346,19 +382,28 @@ void rebindKey(uint8_t& target)
 void settingsMenu()
 {
     waitKeyRelease();
-    const int itemCount = gPriv.rom ? 18 : 17;
+    // fe_settings_menu checks fe_app_running: the EXIT GAME entry only exists
+    // while a game is actually running (18 items); from the picker there are
+    // 17 items.
+    const int itemCount = gInGame ? 18 : 17;
     int selected = 0;
     bool redraw = true;
+    Marquee marquee;
+    char marqueeText[80];
 
     while (true) {
         if (redraw) {
-            drawMenu(selected, itemCount);
+            drawMenu(selected, itemCount, marquee);
             redraw = false;
         }
 
         M5Cardputer.update();
         if (!M5Cardputer.Keyboard.isPressed()) {
-            delay(10);
+            // While the menu is idle, animate a long selected entry at the
+            // firmware's two-pixels-per-50-ms rate.  Short entries only yield.
+            settingsFormatValue(marqueeText, sizeof(marqueeText),
+                                kSettingsMenuItems[selected], selected);
+            marqueeStep(marquee, marqueeText, 0x00FFFFFF);
             continue;
         }
 
@@ -377,10 +422,17 @@ void settingsMenu()
                 gSettings.gfxInterlace = (gSettings.gfxInterlace + 1) % 3;
                 gSettings.changed = true;
             } else if (selected == 9) {
-                gSettings.i2cJoystick = gSettings.i2cJoystick ? 0 : 2;
+                // p_fe_settings+6 ^= 1 (the stored value is 2 or 3).
+                gSettings.i2cJoystick ^= 1;
                 gSettings.changed = true;
             } else if (selected == 10) {
-                gSettings.volumeStart = (gSettings.volumeStart + 0x10) & 0x7f;
+                // VOLUME START: +25, wrapping to 0 at 127 and clamping there.
+                if (gSettings.volumeStart > 126) {
+                    gSettings.volumeStart = 0;
+                } else {
+                    const int v = gSettings.volumeStart + 25;
+                    gSettings.volumeStart = static_cast<uint8_t>(v > 127 ? 127 : v);
+                }
                 gSettings.changed = true;
             } else if (selected == 11) {
                 gSettings.paletteStart = (gSettings.paletteStart + 1) & 3;
@@ -392,19 +444,21 @@ void settingsMenu()
                 gSettings.sgbBorder = (gSettings.sgbBorder + 1) % 3;
                 gSettings.changed = true;
             } else if (selected == 14) {
-                // The firmware cycles CPU MODE as FASTEST -> FAST ->
-                // COMPATIBLE.  A per-game forced-compatibility profile locks
-                // the item, so the value does not change.
-                if (!gSettings.forceCompat) {
-                    if (gSettings.cpuMode == static_cast<uint8_t>(CpuMode::Fastest)) {
-                        gSettings.cpuMode = static_cast<uint8_t>(CpuMode::Fast);
-                    } else if (gSettings.cpuMode == static_cast<uint8_t>(CpuMode::Fast)) {
-                        gSettings.cpuMode = static_cast<uint8_t>(CpuMode::Compatible);
-                    } else {
-                        gSettings.cpuMode = static_cast<uint8_t>(CpuMode::Fastest);
-                    }
-                    gSettings.changed = true;
+                // The firmware cycles two bytes: fe_startup_palette (0x3fcb121c,
+                // the core compatibility flag) and the fast flag at
+                // p_fe_settings+7.  The three states are FAST (0,0),
+                // FASTEST (0,1), COMPATIBLE (1,0).  No lock is applied when a
+                // profile forced compatibility.
+                if (gSettings.startupPalette) {
+                    gSettings.startupPalette = 0;
+                    gSettings.cpuMode = static_cast<uint8_t>(CpuMode::Fast);
+                } else if (gSettings.cpuMode != static_cast<uint8_t>(CpuMode::Fastest)) {
+                    gSettings.cpuMode = static_cast<uint8_t>(CpuMode::Fastest);
+                } else {
+                    gSettings.startupPalette = 1;
+                    gSettings.cpuMode = static_cast<uint8_t>(CpuMode::Fast);
                 }
+                gSettings.changed = true;
             } else if (selected == 15) {
                 gSettings.bassBoostGain += 0.5f;
                 if (gSettings.bassBoostGain > 6.0f) gSettings.bassBoostGain = 0.0f;

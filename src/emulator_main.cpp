@@ -7,9 +7,10 @@
 #include <M5Cardputer.h>
 #include <SD.h>
 #include <sys/time.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
-
+#include <algorithm>
 #include "fe_walnut.h"
 #include "minigb_apu.h"
 
@@ -41,8 +42,9 @@ uint64_t nowUs()
 
 const uint32_t* presetPalette(uint8_t index)
 {
-    // 0 = B&W, 1 = original DMG, 2 = "Pocket" (the firmware's default),
-    // 3 = "Light" (the firmware's pocket table).
+    // fe_emulator_main (0x420120c9): 0 = B&W, 1 = original DMG, 2 and 3 both
+    // use the Pocket table at 0x3fc95f00.  The "Light" label is only a
+    // display string for index 3, so both 2 and 3 resolve to Pocket.
     switch (index & 3) {
     case 0:  return kPaletteBlackWhite;
     case 1:  return kPaletteOriginal;
@@ -63,29 +65,33 @@ void drawSplash()
     auto& d = M5Cardputer.Display;
     d.clearDisplay();
 
-    // Fade the title in from black.
-    for (uint32_t c = 0; c <= 0xFFFFFF; c += 0x111111) {
+    // fe_emulator_main fades the title in from black to white one 8-bit step
+    // per channel at a time: c += 0x00010101 until c == 0x01010100 (256
+    // steps). Each step yields for one tick and then waits 5 ms.
+    for (uint32_t c = 0; c != 0x01010100u; c += 0x00010101u) {
         d.setTextColor(rgb888ToRgb565(c));
-        setFontSize(64);
+        setFontSize(0x40);
         d.drawString("Gameboy Emulator", 0x16, 0x2D);
-        delay(5);
+        vTaskDelay(1);
+        delayMicroseconds(5000);
     }
 
     d.setTextColor(0xFFFF);
     char version[20];
     snprintf(version, sizeof(version), "ver %d.%d.%02d", 0, 0x4F, 0x42);
-    setFontSize(72);
+    setFontSize(0x48);
     d.drawString(version, 0xA0, 0x5A);
-    delay(kDelaySplashHoldUs / 1000);
+    delayMicroseconds(2500000);
 
-    // Fade back out to white.
-    for (int c = 0xFFFFFF; c >= 0; c -= 0x111111) {
+    // Fade back out with a -= 0x00020202 step until the running colour wraps
+    // to 0xFFFEFEFF (128 steps). The firmware does not delay inside this
+    // loop, so the fade-out is effectively instantaneous.
+    for (uint32_t c = 0x00FFFFFFu; c != 0xFFFEFEFFu; c += 0xFFFDFDFEu) {
         d.setTextColor(rgb888ToRgb565(c));
-        setFontSize(64);
+        setFontSize(0x40);
         d.drawString("Gameboy Emulator", 0x16, 0x2D);
-        setFontSize(72);
+        setFontSize(0x48);
         d.drawString(version, 0xA0, 0x5A);
-        delay(5);
     }
 }
 
@@ -252,6 +258,19 @@ void loadSaveState()
     fitFrameRedrawEverything();
 }
 
+void saveSaveState()
+{
+    waitYield();
+
+    messageBoxDraw(-15, "Saving", "game state", 0xFFFF, 0xFFFF, 2, 2, 4);
+    delay(kDelayMessageUs / 1000);
+    messageBoxClear(-15, "Saving", "game state", 2, 2, 4, 0);
+    saveStateSave(&gGb);
+    gb_run_frame_dualfetch(&gGb);
+
+    fitFrameRedrawEverything();
+}
+
 void saveCartRamWithMessage()
 {
     waitYield();
@@ -284,7 +303,7 @@ void openSettingsMenu()
     // `CPU Compatibility / Locked ON` is only shown when the per-game profile
     // forced compatibility (fe_force_compat != 0).
     if (gSettings.forceCompat) {
-        messageBoxDraw(-15, "CPU Compatibility", "Locked ON", 0xFFFF, 0xFFFF, 2, 2, 4);
+        messageBoxDraw(-15, "CPU Compatibility", "Locked ON", 0xFFFF, 0xFFE0, 2, 2, 4);
         delay(kDelayRomErrorUs / 1000);
         messageBoxClear(-15, "CPU Compatibility", "Locked ON", 2, 2, 4, 0);
     }
@@ -321,49 +340,54 @@ void openSettingsMenu()
     gSharedFlags[kSharedAudioPause] = 0;
 }
 
-void handleHotkey(char key, bool modifier)
+void handleHotkey(char key, const bool fn_key)
 {
+
     switch (key) {
     case '-':
         loadSaveState();
         break;
 
     case '=':
-        if (!modifier) {
+        if (!fn_key) {
             saveCartRamWithMessage();
         }
         break;
 
     case ';':
-        if (modifier) {
+        if (fn_key) {
             gVolume = (gVolume < 0x7A) ? gVolume + 5 : 0x7F;
+            gApuVolume = gVolume;
             showVolumeMessage();
         }
         break;
 
     case '.':
-        if (modifier) {
+        if (fn_key) {
             gVolume = (gVolume > 5) ? gVolume - 5 : 0;
+            gApuVolume = gVolume;
             showVolumeMessage();
         }
         break;
 
     case '/':
-        if (modifier) {
+        if (fn_key) {
             gVolume = (gVolume < 0x40) ? 0x40 : 0x7F;
+            gApuVolume = gVolume;
             showVolumeMessage();
         }
         break;
 
     case ',':
-        if (modifier) {
+        if (fn_key) {
             gVolume = 0;
+            gApuVolume = 0;
             showVolumeMessage();
         }
         break;
 
     case '[':
-        if (modifier) {
+        if (fn_key) {
             toggleSgbBorder();
         } else {
             cycleDisplayMode();
@@ -371,7 +395,7 @@ void handleHotkey(char key, bool modifier)
         break;
 
     case '\\':
-        if (modifier) {
+        if (fn_key) {
             gDisplay.verticalScale = (gDisplay.verticalScale + 1) & 3;
             setVerticalScale(gDisplay.verticalScale);
             static const char* const names[] = {
@@ -399,7 +423,7 @@ void handleHotkey(char key, bool modifier)
         break;
 
     case ']':
-        if (modifier) {
+        if (fn_key) {
             // Advance the animated border frame (modulo frame_count + 2).
             if (gSgbBorderEnabled) {
                 gSgbBorderFrame = static_cast<uint8_t>(
@@ -418,6 +442,8 @@ void handleHotkey(char key, bool modifier)
     default:
         break;
     }
+
+
 }
 
 void updateGamepad(const Keyboard_Class::KeysState& state)
@@ -438,7 +464,7 @@ void displayTaskEntry(void* /*arg*/)
 {
     while (gAppRunning) {
         if (gDisplayBusy) {
-            fitFrame();
+            fitFrame();            
             gDisplayBusy = 0;
         }
         vTaskDelay(6);
@@ -446,12 +472,49 @@ void displayTaskEntry(void* /*arg*/)
     vTaskDelete(nullptr);
 }
 
+// One emulated Game Boy frame.  fe_emulator_main (0x420125dd-0x420125f2)
+// reads the runtime fast flag at p_fe_settings+7 and calls the original
+// single-instruction dispatcher when it is non-zero, otherwise the dual-fetch
+// dispatcher.  That flag is the CPU MODE "FASTEST" state; fe_settings_load()
+// never writes it, so a loaded COMPATIBLE byte still leaves it at its init
+// value of 1 exactly as in the firmware.
+void runEmulatedFrame()
+{
+    if (gSettings.cpuMode == static_cast<uint8_t>(CpuMode::Fastest)) {
+        gb_run_frame(&gGb);         // wcgb_gb_run_frame (0x403764b0)
+    } else {
+        gb_run_frame_dualfetch(&gGb);  // wcgb_gb_run_frame_dualfetch (0x4200e2c4)
+    }
+}
+
+// (int)(16675.0 - elapsed), the signed remaining part of the frame period.
+// The firmware casts the double directly; clamp first so an absurd delay
+// cannot invoke undefined behaviour.
+int32_t clampToInt32(double value)
+{
+    if (value > 2147483647.0) {
+        return INT32_MAX;
+    }
+    if (value < -2147483648.0) {
+        return INT32_MIN;
+    }
+    return static_cast<int32_t>(value);
+}
+
+int32_t frameBudgetFromElapsed(uint64_t elapsed)
+{
+    return clampToInt32(kFramePeriodUs - static_cast<double>(elapsed));
+}
+
 void runMainLoop()
 {
-    uint64_t lastFrame = nowUs();
+    // fe_emulator_main keeps the signed leftover of the previous pass here
+    // (stack slot a1+0x18c).
+    int32_t sleepAccum = 0;
 
     while (gAppRunning) {
-        const uint64_t frameStart = nowUs();
+        // r7: timestamp taken at the top of the loop (0x42012420).
+        const uint64_t loopStart = nowUs();
 
         gGb.direct.joypad = 0xFF;
 
@@ -463,19 +526,17 @@ void runMainLoop()
             // The firmware's key_flags byte is KeysState.fn (offset 1 of the
             // copied KeysState), i.e. hotkey alternatives use the fn key.
             const bool modifier = state.fn;
-            for (char key : state.word) {
+            for (auto key : state.word) {
                 handleHotkey(key, modifier);
+            }
+            const bool bk_key = state.del;
+            if (bk_key) {
+                saveSaveState();
             }
         }
 
         if (gAppRunning) {
-            // COMPATIBLE uses the single-fetch core (p_wcgb_gb_run_frame at
-            // 0x403764b0); FASTEST and FAST use the dual-fetch dispatcher.
-            if (gSettings.cpuMode == static_cast<uint8_t>(CpuMode::Compatible)) {
-                gb_run_frame(&gGb);
-            } else {
-                gb_run_frame_dualfetch(&gGb);
-            }
+            runEmulatedFrame();
             romCacheLruScan();
         }
 
@@ -485,12 +546,54 @@ void runMainLoop()
             taskYIELD();
         }
 
-        const uint64_t elapsed = nowUs() - frameStart;
-        if (elapsed < static_cast<uint64_t>(kFramePeriodUs)) {
-            delayMicroseconds(static_cast<uint32_t>(kFramePeriodUs - elapsed));
+        // 0x42012638 increments fe_frame_counter (capped at 99); the counter
+        // feeds only the volume-key debug overlay, which this front-end does
+        // not draw.
+
+        // 0x4201265a-0x4201268a:
+        //   budget = (int)(16675.0 - elapsed) + sleep_accum
+        const int64_t budget64 =
+            static_cast<int64_t>(frameBudgetFromElapsed(nowUs() - loopStart)) +
+            sleepAccum;
+        int32_t budget = clampToInt32(static_cast<double>(budget64));
+
+        if (budget > kFrameSleepTrigUs) {
+            // 0x42012692-0x420126dd.  Spend at most 75 % of the remaining
+            // budget (100 % once that fraction reaches the full period), so
+            // the millisecond-granularity usleep cannot overshoot.  The
+            // unspent remainder is carried into the next pass.
+            const float frac =
+                static_cast<float>(budget) / static_cast<float>(kFramePeriodUs);
+            float scale = frac * kFrameSleepFraction;
+            if (scale > 1.0f) {
+                scale = 1.0f;
+            }
+            const int32_t sleepUs =
+                static_cast<int32_t>(scale * static_cast<float>(budget));
+            budget -= sleepUs;
+            if (sleepUs > 10) {
+                usleep(static_cast<useconds_t>(sleepUs));
+            }
         }
-        lastFrame = nowUs();
-        (void)lastFrame;
+
+        if (budget < kFrameCatchupUs && gAppRunning) {
+            // 0x420126ec-0x420127e6.  More than one full frame behind: run
+            // an extra, undisplayed frame.  Credit 80 % of that frame's
+            // unused period back to the budget, exactly as the firmware does:
+            //   budget = (int)((double)budget + 0.8 * (double)(16675 - used))
+            const uint64_t catchupStart = nowUs();
+            gEmulatorStatus |= kStatusCompat;
+            runEmulatedFrame();
+            gEmulatorStatus &= ~kStatusCompat;
+            const int32_t slack =
+                frameBudgetFromElapsed(nowUs() - catchupStart);
+            budget = clampToInt32(
+                static_cast<double>(budget) +
+                kSleepScale * static_cast<double>(slack));
+        }
+
+        // 0x420127e9: floor the carried remainder at fe_frame_time_min.
+        sleepAccum = budget > kFrameTimeMinUs ? budget : kFrameTimeMinUs;
     }
 }
 
@@ -538,6 +641,7 @@ void emulatorMain()
     strncpy(reinterpret_cast<char*>(gRomExtension), ".gbc", sizeof(gRomExtension) - 1);
 
     gAppRunning = true;
+    gInGame    = false;
 
     while (gAppRunning) {
         char path[kMaxPath] = {};
@@ -548,6 +652,17 @@ void emulatorMain()
             settingsMenu();
             settingsSave();
             continue;
+        }
+
+        // fe_emulator_main: record whether the selected name ends in 'b'
+        // (.gb) in shared_flags[2] and clear the high-window pointer at
+        // shared_flags+8 for the next profile detection.
+        {
+            const size_t len = strlen(path);
+            const char last = len ? path[len - 1] : 0;
+            gSharedFlags[kSharedSgbCompat] =
+                (static_cast<uint8_t>(last) & 0xDF) == 'B' ? 1 : 0;
+            memset(&gSharedFlags[8], 0, sizeof(void*));
         }
 
         strncpy(gRomPath, path, sizeof(gRomPath) - 1);
@@ -646,24 +761,56 @@ void emulatorMain()
             }
         }
 
-        if (gSettings.forceCompat) {
-            Serial.println("forcing compatibility mode...\n");
-            gGb.cgb.cgbMode = 0;
-            gEmulatorStatus &= ~kStatusSgbPalette;
-            gSettings.cpuMode = static_cast<uint8_t>(CpuMode::Compatible);
+        // If the profile requested the built-in high window, re-run the ROM
+        // loader: it now sees shared_flags+8 and fills the window from the
+        // 0x3c07edb4 sector map instead of the normal linear cache.
+        {
+            uint8_t* highWindow = nullptr;
+            memcpy(&highWindow, &gSharedFlags[8], sizeof(highWindow));
+            if (highWindow) {
+                Serial.println("re-reading ROM for the high window...\n");
+                gRomFile.close();
+                uint8_t* rom2 = readRomToRam(path);
+                gPriv.rom = rom2;
+                if (!rom2) {
+                    debugPrint("Error at read_rom_to_ram!!");
+                    delay(kDelayRomErrorUs / 1000);
+                    if (gPriv.cartRam) {
+                        free(gPriv.cartRam);
+                        gPriv.cartRam = nullptr;
+                    }
+                    gRomFile.close();
+                    continue;
+                }
+            }
         }
 
-        gVolume = gSettings.volumeStart ? gSettings.volumeStart : kDefaultVolume;
+        if (gSettings.forceCompat) {
+            Serial.println("forcing compatibility mode...\n");
+            // fe_emulator_main: clear fe_emulator_status bit 1 and set the
+            // old core's gb_s+9 compatibility byte to 1.  The current core
+            // has no such byte, so forceCompat is kept as the equivalent
+            // compatibility state; it intentionally does not change the
+            // per-frame core choice (that is driven by the CPU-MODE fast
+            // flag alone, see runEmulatedFrame).
+            gEmulatorStatus &= ~kStatusCompat;
+        }
+
+        // fe_emulator_main copies the VOLUME START byte straight into
+        // apu_global_volume; the fresh-config default is 0 (off).
+        gVolume = gSettings.volumeStart;
 
         // Speaker configuration and APU initialisation.
         auto spkCfg = M5Cardputer.Speaker.config();
-        spkCfg.sample_rate = kSampleRate;
-        spkCfg.task_priority = 4;
+        spkCfg.sample_rate   = kSampleRate;
+        spkCfg.stereo        = false;
+        spkCfg.magnification = 1;
+        spkCfg.dma_buf_len   = kAudioSamples;   // 548 frames (~16.7 ms)
         spkCfg.dma_buf_count = 4;
-        spkCfg.dma_buf_len = 4;
         M5Cardputer.Speaker.config(spkCfg);
-        M5Cardputer.Speaker.begin();
         M5Cardputer.Speaker.setVolume(255);
+        M5Cardputer.Speaker.begin();
+
 
         audioInit();
         gApuVolume = gVolume;
@@ -690,6 +837,7 @@ void emulatorMain()
         gDisplayBusy = 0;
         gSharedFlags[kSharedAudioPause] = 0;
         gAppRunning = true;
+        gInGame     = true;
 
         xTaskCreatePinnedToCore(audioTaskEntry, "gbAPU", kAudioTaskStack, &gGb,
                                 kAudioTaskPriority, &sAudioTask, 0);
@@ -702,6 +850,7 @@ void emulatorMain()
         // The settings menu's EXIT GAME item clears gAppRunning. Pause the
         // APU and let both worker tasks notice the flag and self-delete.
         gAppRunning = false;
+        gInGame     = false;
         gSharedFlags[kSharedAudioPause] = 1;
         vTaskDelay(30);
         sAudioTask = nullptr;

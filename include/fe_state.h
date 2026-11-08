@@ -57,10 +57,11 @@ struct DisplayState {
     uint16_t* fb2                  = nullptr;
 };
 
-// Persistent emulator status bits (0x420008d8).
+// Persistent emulator status bits (0x420008d8): bit 0 mirrors GFX INTERLACE
+// being non-zero, bit 1 is the forced/startup compatibility state.
 enum EmulatorStatus : uint8_t {
-    kStatusSgbPalette = 0x01,
-    kStatusFrameSkip  = 0x02,
+    kStatusInterlace = 0x01,
+    kStatusCompat    = 0x02,
 };
 
 // Shared flags used by the ROM cache and audio task (0x4200005c).
@@ -81,6 +82,9 @@ extern Settings      gSettings;
 extern DisplayState  gDisplay;
 
 extern bool             gAppRunning;
+// True while the emulator main loop owns the machine (the firmware's
+// fe_app_running).  False while the file picker is on screen.
+extern bool             gInGame;
 extern volatile uint8_t gDisplayBusy;
 extern uint8_t          gSharedFlags[16];
 extern uint8_t          gEmulatorStatus;

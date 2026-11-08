@@ -6,6 +6,10 @@ decompilation: the code has been rewritten as normal C++/Arduino modules with
 the same control flow, constants, tables and user-visible behaviour as the
 firmware.
 
+See `VERIFICATION_NOTES.md` for the line-by-line audit against the ELF, the
+list of confirmed divergences that were fixed, and the remaining known
+deviations.
+
 ## What is included
 
 ```
@@ -15,6 +19,7 @@ src/
   display.cpp           scanline conversion, framebuffer push, SGB borders
   rom_cache.cpp         119-sector streaming ROM cache + walnut callbacks
   file_picker.cpp       SD browser
+  marquee.cpp           scrolling selected text shared by both menus
   ui.cpp                text helpers, message boxes, file picker
   settings.cpp          /gbeconfig.dat load/save, settings menu
   save_state.cpp        .sav cartridge RAM and .qsv save states

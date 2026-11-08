@@ -29,6 +29,7 @@ Settings      gSettings;
 DisplayState  gDisplay;
 
 bool             gAppRunning    = false;
+bool             gInGame        = false;
 volatile uint8_t gDisplayBusy   = 0;
 uint8_t          gSharedFlags[16] = {};
 uint8_t          gEmulatorStatus  = 0;
@@ -103,6 +104,7 @@ void sdInit()
         vTaskDelay(200);
         retry++;
     }
+    
 
     Serial.println(mounted ? "Done!\n" : "Failed!\n");
 }
@@ -115,8 +117,8 @@ void sdInit()
 void setup()
 {
     // The original firmware disables both watchdogs before doing any I/O.
-    disableCore0WDT();
-    disableCore1WDT();
+    // disableCore0WDT();
+    // disableCore1WDT();
 
     Serial.begin(115200);
     Serial.println("Gameboy Enhanced Firmware setup() called.\n");
@@ -126,9 +128,18 @@ void setup()
 
     fe::sdInit();
 
+    // fe_setup: rotation 0, 16 bpp, then the panel bus is reconfigured to
+    // 80 MHz write / 20 MHz read (the literal values 0x04C4B400 and
+    // 0x01312D00 stored into the Bus_SPI config at fe_setup+0xa8).
     M5Cardputer.Display.setRotation(0);
     M5Cardputer.Display.setColorDepth(16);
-    fe::setFontSize(64);
+    M5Cardputer.Display.setSwapBytes(true);
+    if (auto* panel = M5Cardputer.Display.getPanel()) {
+        if (auto* bus = panel->getBus()) {
+            bus->setClock(80000000);
+            bus->setReadClock(20000000);
+        }
+    }
 
     // Never returns: emulatorMain() owns the rest of the program.
     fe::emulatorMain();

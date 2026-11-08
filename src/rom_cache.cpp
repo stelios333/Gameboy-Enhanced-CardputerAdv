@@ -13,6 +13,8 @@
 #include "fe_save.h"
 #include "fe_ui.h"
 
+#include "../resources/rom_mmap.h"
+
 namespace fe {
 
 RomCache gRomCache;
@@ -174,6 +176,65 @@ uint8_t* readRomToRam(const char* path)
     if (dot) {
         strncpy(reinterpret_cast<char*>(gRomExtension), dot, sizeof(gRomExtension) - 1);
         gRomExtension[sizeof(gRomExtension) - 1] = '\0';
+    }
+
+    // High-window remap mode.  fe_load_sgbprofile stores a non-null pointer
+    // at shared_flags+8 for the built-in Grand Theft Auto profile; the
+    // firmware then re-runs this loader with the 0x3c07edb4 sector map and
+    // reads the selected sectors into the high window instead of the normal
+    // 119-slot cache.  The reconstruction uses the PSRAM window and fills it
+    // from the selected file so the same sector map is honoured.
+    uint8_t* highWindow = nullptr;
+    memcpy(&highWindow, &gSharedFlags[8], sizeof(highWindow));
+    if (highWindow) {
+        if (!gRomCache.highBase) {
+            gRomCache.highBase = static_cast<uint8_t*>(
+                heap_caps_malloc(kCacheSlots * kSectorSize, MALLOC_CAP_SPIRAM));
+            if (!gRomCache.highBase) {
+                gRomFile.close();
+                return nullptr;
+            }
+        }
+        highWindow = gRomCache.highBase;
+        gRomCache.base = highWindow;
+
+        memset(gRomCache.sectorMap, 0xff, sizeof(gRomCache.sectorMap));
+        memset(gRomCache.ages, 0xff, sizeof(gRomCache.ages));
+        for (int i = 0; i < kCacheSlots; i++) {
+            gRomCache.sectors[i] = -1;
+        }
+
+        for (uint32_t sector = 0; sector < kSectorMapSize; sector++) {
+            const uint8_t slot = kRomHighMmap[sector];
+            if (slot == 0xff) {
+                continue;
+            }
+            // Values below 0x77 index the normal cache base; values 0x77 and
+            // above use the high window exactly like fe_gb_rom_read does.
+            uint8_t* dest = (slot < kCacheSlots)
+                                ? highWindow + slot * kSectorSize
+                                : highWindow + (slot - 0x77) * kSectorSize;
+            const uint32_t offset = sector * kSectorSize;
+            if (offset >= fileSize) {
+                continue;
+            }
+            uint32_t want = fileSize - offset;
+            if (want > kSectorSize) {
+                want = kSectorSize;
+            }
+            memset(dest, 0xff, kSectorSize);
+            gRomFile.seek(offset);
+            gRomFile.read(dest, want);
+            gRomCache.sectorMap[sector] = slot;
+            gRomCache.sectors[slot < kCacheSlots ? slot : slot - 0x77] =
+                static_cast<int>(sector);
+            gRomCache.ages[slot < kCacheSlots ? slot : slot - 0x77] = 0xffff;
+        }
+
+        gRomCache.next   = 0;
+        gRomCache.victim = 0;
+        gRomCache.minAge = 0x7fffffff;
+        return highWindow;
     }
 
     memset(gRomCache.sectorMap, 0xff, sizeof(gRomCache.sectorMap));

@@ -17,8 +17,10 @@ volatile bool gAudioPause = false;
 namespace {
 
 int16_t sApuSamples[kAudioSamples * 2];       // stereo interleaved
-uint8_t sAudioOut[2][kAudioSamples];          // double buffer
 uint8_t sBufferIndex = 0;
+constexpr int kAudioOutBuffers = 3;
+uint8_t sAudioOut[kAudioOutBuffers][kAudioSamples];
+
 
 // The firmware's apu_volume_convert() divides by apu_volume_curve
 // (0x422D3333 == 43.3f) rather than by the 0..127 range.
@@ -29,7 +31,9 @@ constexpr float kVolumeCurve = 43.3f;
 void audioInit()
 {
     audio_init();
-    gApuVolume = gSettings.volumeStart ? gSettings.volumeStart : kDefaultVolume;
+    // The firmware copies fe_volume (VOLUME START) directly into
+    // apu_global_volume; a fresh config leaves it at 0 (off).
+    gApuVolume = gSettings.volumeStart;
     gAudioPause = false;
 }
 
@@ -50,7 +54,7 @@ void audioTaskBody()
         for (int i = 0; i < kAudioSamples; i++) {
             const int32_t left  = sApuSamples[i * 2 + 0];
             const int32_t right = sApuSamples[i * 2 + 1];
-            int32_t mixed = (left + right) / 2;
+            int32_t mixed = (left + right) >> 1;
             mixed = static_cast<int32_t>(static_cast<float>(mixed) * volumeScale);
             mixed >>= 8;
             if (mixed < -128) mixed = -128;
@@ -60,8 +64,9 @@ void audioTaskBody()
         }
 
         M5Cardputer.Speaker.playRaw(out, kAudioSamples, kSampleRate,
-                                    false, 1, -1, false);
-        sBufferIndex ^= 1;
+                                    false, 1, 0, false);
+        sBufferIndex = (sBufferIndex + 1) % kAudioOutBuffers;
+
     }
 }
 

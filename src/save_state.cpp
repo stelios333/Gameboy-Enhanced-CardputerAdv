@@ -32,7 +32,7 @@ size_t saveSize(gb_s* gb)
     return size;
 }
 
-void makePath(char* out, size_t outSize, const char* suffix)
+void constructPath(char* out, size_t outSize, const char* suffix)
 {
     snprintf(out, outSize, "%s%s", gRomPath, suffix);
 }
@@ -57,7 +57,7 @@ void readValue(File& f, T& value)
 void cartRamLoad(gb_s* gb)
 {
     char path[kMaxPath];
-    makePath(path, sizeof(path), "sav");
+    constructPath(path, sizeof(path), "sav");
 
     if (SD.exists(path)) {
         File f = SD.open(path, FILE_READ);
@@ -85,7 +85,7 @@ void cartRamSave(gb_s* gb)
     }
 
     char path[kMaxPath];
-    makePath(path, sizeof(path), "sav");
+    constructPath(path, sizeof(path), "sav");
 
     File f = SD.open(path, FILE_WRITE);
     if (!f) {
@@ -111,14 +111,14 @@ void cartRamSave(gb_s* gb)
 bool saveExists()
 {
     char path[kMaxPath];
-    makePath(path, sizeof(path), "qsv");
+    constructPath(path, sizeof(path), "qsv");
     return SD.exists(path);
 }
 
 void saveStateSave(gb_s* gb)
 {
     char path[kMaxPath];
-    makePath(path, sizeof(path), "qsv");
+    constructPath(path, sizeof(path), "qsv");
 
     File f = SD.open(path, FILE_WRITE);
     if (!f) {
@@ -174,7 +174,7 @@ void saveStateSave(gb_s* gb)
 void saveStateLoad(gb_s* gb)
 {
     char path[kMaxPath];
-    makePath(path, sizeof(path), "qsv");
+    constructPath(path, sizeof(path), "qsv");
 
     File f = SD.open(path, FILE_READ);
     if (!f) {

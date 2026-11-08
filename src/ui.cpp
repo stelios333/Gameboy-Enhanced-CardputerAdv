@@ -111,7 +111,10 @@ void messageBoxDraw(int centerX, const char* line1, const char* line2,
     const BoxGeometry g = computeBox(line1, line2, line1Size, line2Size,
                                      padding, centerX);
 
-    M5Cardputer.Display.fillRect(g.x, g.y, g.w, g.h, 0x2104);
+    // fe_message_box_draw fills with rgb888_to_rgb565(0x00666666) and then
+    // outlines the result in white.
+    M5Cardputer.Display.fillRect(g.x, g.y, g.w, g.h,
+                                 rgb888ToRgb565(0x00666666));
     M5Cardputer.Display.drawRect(g.x, g.y, g.w, g.h, 0xFFFF);
 
     setTextScale(line1Size);
@@ -149,7 +152,7 @@ void gbError(gb_s* /*gb*/, const enum gb_error_e errorCode, const uint16_t addre
         "ERROR:INVALID OPCODE",
         "ERROR:INVALID READ",
         "ERROR:INVALID WRITE",
-        "ERROR:HATL FOREVER",
+        "ERROR:HALT FOREVER",
     };
 
     const int index = (errorCode >= 0 && errorCode < 5) ? errorCode : 0;

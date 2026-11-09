@@ -655,8 +655,10 @@ void emulatorMain()
         }
 
         // fe_emulator_main: record whether the selected name ends in 'b'
-        // (.gb) in shared_flags[2] and clear the high-window pointer at
-        // shared_flags+8 for the next profile detection.
+        // (.gb) in shared_flags[2], then clear the high-window pointer at
+        // shared_flags+8 (0x42011ebc: s32i zero, shared_flags, 8).
+
+        
         {
             const size_t len = strlen(path);
             const char last = len ? path[len - 1] : 0;
@@ -761,9 +763,13 @@ void emulatorMain()
             }
         }
 
-        // If the profile requested the built-in high window, re-run the ROM
-        // loader: it now sees shared_flags+8 and fills the window from the
-        // 0x3c07edb4 sector map instead of the normal linear cache.
+        // app2.elf still contains the high-window re-read (0x4201216e): if the
+        // u32 at shared_flags+8 is non-null it closes and reopens the ROM, and
+        // fe_read_rom_to_ram then takes its per-sector preload branch.  Unlike
+        // app_new.elf, no profile in app2 writes that pointer (the GTA entry
+        // only sets shared_flags[4]), so the branch is unreachable here.  Keep
+        // it to mirror the build; it is a no-op with the pointer cleared above.
+
         {
             uint8_t* highWindow = nullptr;
             memcpy(&highWindow, &gSharedFlags[8], sizeof(highWindow));

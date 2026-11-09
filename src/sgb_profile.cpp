@@ -22,7 +22,6 @@ enum ProfileFlags : uint8_t {
     kFlagShared2Clear = 0x02,
     kFlagShared4      = 0x04,
     kFlagReturnZero   = 0x08,
-    kFlagHighBase     = 0x10,
 };
 
 struct SgbProfile {
@@ -91,8 +90,11 @@ const SgbProfile kProfiles[] = {
     {"YOSSY NO TAMAGO",      0x0b, kNoChange, kNoChange, 0},
     {"DONKEYKONGLAND 3",     kNoChange, kNoChange, kNoChange, kFlagShared4},
     {"DONKEYKONGLAND 2",     kNoChange, kNoChange, kNoChange, kFlagShared4},
+    // app2.elf only sets shared_flags[4] and returns 0 for this title.  It
+    // does not store a high-window pointer at shared_flags+8; that write (and
+    // the embedded GTA ROM it pointed at) was added in app_new.elf.
     {"GRAND THEFTAOAE\x80",  kNoChange, kNoChange, kNoChange,
-     kFlagShared4 | kFlagHighBase | kFlagReturnZero},
+     kFlagShared4 | kFlagReturnZero},
 };
 
 }  // namespace
@@ -128,12 +130,6 @@ uint8_t loadSgbProfile(gb_s* gb)
         }
         if (p.flags & kFlagShared4) {
             gSharedFlags[kSharedHighCache] = 1;
-        }
-        if (p.flags & kFlagHighBase) {
-            // The firmware stored its high ROM window pointer at
-            // shared_flags+8.  Mirror that with the PSRAM window used here.
-            uint8_t* highBase = gRomCache.highBase;
-            memcpy(&gSharedFlags[8], &highBase, sizeof(highBase));
         }
         if (p.flags & kFlagReturnZero) {
             return 0;

@@ -28,6 +28,7 @@ constexpr int kChunkCount     = 9;
 // ---------------------------------------------------------------------------
 constexpr int kSectorSize     = 1024;
 constexpr int kCacheSlots     = 119;   // 0x77
+constexpr int kCacheScanSlots = 29;    // slots aged per frame (119 / 4)
 constexpr int kCacheLimit     = kCacheSlots * kSectorSize - 1;
 constexpr int kSectorMapSize  = 4096;  // address >> 10 (4 MiB of ROM)
 

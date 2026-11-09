@@ -110,7 +110,8 @@ entries.
   (`gb`, `rom_read`, `cart_ram_read`, `cart_ram_write`, `gb_error`, `priv`).
   The bundled header exposes the current eight-argument API with separate
   16-bit and 32-bit ROM readers.  The reconstruction uses the current API;
-  `gbRomRead16`/`gbRomRead32` are byte-wise readers in `rom_cache.cpp`.
+  `gbRomRead16`/`gbRomRead32` mirror the firmware's aligned sector-cache fast
+  paths and fall back to byte reads when a value crosses a 1 KiB boundary.
 * **Save states.**  The original wrote format version 4 using hard-coded
   offsets into the old `gb_s`.  The reconstruction keeps the `.qsv` naming and
   version byte but serialises the current struct by named members.  Files are
@@ -119,11 +120,14 @@ entries.
   GBC indices were decoded mechanically from the comparison chain in
   `fe_load_sgbprofile` and verified byte-for-byte against the firmware's title
   pointer table at `0x42000254`.
-* **High ROM window.**  Special titles (Donkey Kong Land 2/3, Grand Theft Auto)
-  are detected and set `shared_flags[4]`; Grand Theft Auto additionally stores
-  the high-window base pointer at `shared_flags+8`.  The original preloaded a
-  high ROM window from flash; the reconstruction allocates the equivalent
-  window from PSRAM and loads sectors on demand.
+* **SGB profile flags.**  Special titles (Donkey Kong Land 2/3, Grand Theft
+  Auto) are detected and set `shared_flags[4]`; Grand Theft Auto also returns
+  0 so the profile banner is skipped.  This matches app2.elf.  app2 still has
+  the vestigial high-window machinery (the loader's `shared_flags+8` preload
+  branch and the post-profile re-read), but no profile in this build writes
+  that pointer, so it never runs.  The later app_new build made it live with
+  an embedded GTA image at `0x3c09ddb4` and the `0x3c07edb4` sector map; that
+  build-specific experiment is not part of the reconstruction.
 * **Display scaling.**  Aspect ratios are 10:9 through 20:9 in steps of 1
   (`160,165,180,...,300` px destination width); widths above 240 are cropped
   to the panel centre, mirroring `fe_display_scale_blit`.  `10:9` uses the
@@ -135,9 +139,11 @@ entries.
   GFX INTERLACE = FULL, PALETTE START = Pocket, SGB BORDER = MANUAL and the
   runtime volume to `0x14`.
 * **Audio.**  `apu_volume_convert` divides by `apu_volume_curve`
-  (`0x422D3333` = 43.3f), mixes the stereo pair with `(L+R)/2`, shifts right by
-  8 and clamps to −128..127 before adding the unsigned 8-bit midpoint
-  (`0x80`), exactly as the firmware does.
+  (`0x422D3333` = 43.3f), mixes the stereo pair with `(L+R)>>1`, shifts right
+  by 8 and clamps to −128..127 before adding the unsigned 8-bit midpoint
+  (`0x80`), exactly as the firmware does.  The 548-byte result is played back
+  as mono; the firmware passed `stereo=true` to `_play_raw`, which halved the
+  playback period, so the reconstruction deliberately fixes that bug.
 * **gb_error.**  Messages are the firmware's `gb_error_messages` strings
   (`ERROR:UNKNOWN`, `ERROR:INVALID OPCODE`, …) shown with a `%04x` address and
   a 6.2 s delay.
@@ -152,6 +158,16 @@ entries.
 
 ## Address map
 
-The reconstruction follows the Ghidra symbol names in `FUNCTION_MAP.md`.
-Front-end code spans `0x42002b38`–`0x42013ce4`; the ROM cache lives at
-`0x3fcba940` and the framebuffer at `0x3fc96ef0` in the original image.
+The reconstruction follows the Ghidra symbol names in `FUNCTION_MAP.md`, which
+describes `app_new.elf`.  The front-end sits around `0x42002b38`–`0x42013ce4`
+in that build and slightly lower in `app2.elf` (for example
+`fe_rgb888_to_rgb565` is `0x42013c4c`); the ROM cache base `0x3fcba940` and the
+framebuffer `0x3fc96ef0` are the same in both.
+
+The cache/loader functions were re-audited against `app2.elf`, whose copies
+are slightly lower than `app_new.elf`'s: `fe_rom_scratch_alloc` `0x42003034`,
+`fe_rom_cache_load_sector` `0x42003064`, `fe_rom_cache_miss` `0x420030b4`,
+`fe_gb_rom_read` `0x42003144`, `fe_gb_rom_read16` `0x4200318c`,
+`fe_gb_rom_read32` `0x420031fc`, `fe_rom_cache_lru_scan` `0x42003288` and
+`fe_read_rom_to_ram` `0x4200f504`.  Only `app_new.elf` has the high-window
+branch that indexes an embedded GTA image at `0x3c09ddb4`.

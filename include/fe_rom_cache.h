@@ -9,10 +9,15 @@
 namespace fe {
 
 // 119 KiB of sector storage, a 4096-entry sector -> slot map and per-slot LRU
-// ages. This mirrors the firmware's cache at 0x3fcba940 / 0x3fcb9940.
+// ages.  The firmware keeps the same state at 0x3fcba940 (data), 0x3fcb9940
+// (sector map), 0x3fcb9650 (sectors), 0x3fcb9850 (ages).
+//
+// app2.elf has no second "high" cache base and no embedded ROM: gb_rom_read/
+// 16/32 all resolve through this one cache, and sector-map values >= 0x77 are
+// misses.  app_new.elf added the high window (map values >= 0x77 indexed an
+// embedded GTA image at 0x3c09ddb4); that is not part of this build.
 struct RomCache {
     uint8_t* base     = nullptr;
-    uint8_t* highBase = nullptr;
     uint32_t used     = 0;
     uint32_t limit    = kCacheLimit;
     uint8_t  sectorMap[kSectorMapSize];
@@ -21,6 +26,7 @@ struct RomCache {
     int      next     = 0;
     int      victim   = 0;
     int      minAge   = 0x7fffffff;
+    uint32_t stats[6] = {};  // fe_rom_stat0..5 (cleared after a load)
 };
 
 extern RomCache gRomCache;

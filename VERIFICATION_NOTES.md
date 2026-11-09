@@ -1,10 +1,21 @@
 # Front-end verification notes
 
 This file records the audit of the reconstructed front-end against the
-compiled firmware `../app_new.elf` (MD5 `c611c36d58d123d5253d4c3e03de1046`,
-Ghidra program `app.elf`).  The ELF is the source of truth: every entry below
-was checked against the disassembly and/or the raw literal/rodata bytes, not
-against the older `gb_cardputer.ino`.
+compiled firmware `.elf` images.  The original audit used `../app_new.elf`
+(MD5 `c611c36d58d123d5253d4c3e03de1046`).  The ROM cache / ROM-loading
+functions were later re-audited against `../app2.elf` (SHA-256
+`611b5df9f2dffbb7c5aefc18523090b369cfc3113dcbe8a14e0fc152578a48f8`), the
+build *before* the Grand Theft Auto high-window experiment was armed (app2 has
+the re-read/preload gate but no code that writes the high-window pointer).
+Where the two builds differ, the reconstruction now follows `app2.elf`.  The ELF
+is the source of truth: every entry below was checked against the disassembly
+and/or the raw literal/rodata bytes, not against the older `gb_cardputer.ino`.
+
+For `app2.elf` the Ghidra database was seeded with an FID database generated
+from `app_new.elf`, so all matching functions kept their names; the four
+cache/ROM-loading functions that did not match were identified by their
+literal-pool references and renamed (`fe_read_rom_to_ram`,
+`fe_gb_rom_read`, `fe_gb_rom_read16`, `fe_gb_rom_read32`).
 
 ## Method
 
@@ -35,7 +46,9 @@ change.
 | Settings menu strings | 18 entries at `0x3c0705e4` match `kSettingsMenuItems`. |
 | Aspect-ratio widths | Jump table at `0x3c07ec48`: `160,165,180,195,210,225,240,255,270,285,300`; matches `setAspectRatio`. |
 | ROM cache geometry | 119 slots x 1 KiB at `0x3fcba940`, 4096-byte sector map at `0x3fcb9940`, `int[119]` sectors, `uint16[119]` ages, limit `0x1dbff`. |
-| `fe_gb_rom_read` dispatch | `slot = map[addr >> 10]`; `< 0x77` cache, `0xff` miss, else high window. |
+| `fe_gb_rom_read` dispatch | `slot = map[addr >> 10]`; `slot < 0x77` is a cache hit (age is reset to `0xffff`), anything else (including `0xff`) goes to `fe_rom_cache_miss`.  No high-window branch in the readers; the loader/re-read gate at `shared_flags+8` exists but is never armed in `app2.elf`. |
+| 16/32-bit ROM reads | `fe_gb_rom_read16`/`32` use an aligned loaded-sector fast path (`ages[slot] = 0xffff`, direct `l16ui`/`l32i`); they fall back to byte reads when the value would cross a 1 KiB sector boundary or the sector is not cached. |
+| Cache miss / LRU | A miss ages all 119 slots starting at `next`, picks the lowest age, evicts it and leaves `next` unchanged.  The per-frame scan ages 29 slots (hardware loop count 29). |
 | Message-box geometry | `box_x = 120 - w/2`, `box_y = (center_x + 0x43) - h/2`, `w = max(w1,w2)+2+padding`, `h = h1+h2+2+padding`, text at `y+padding+1` and `+line1_h`. |
 | `rgb888_to_rgb565` | `0x42013ce4` uses the `0x80808081` reciprocal; it is exactly `floor(v*31/255)` / `floor(v*63/255)`, which is what the reconstruction already computes. |
 | APU volume conversion | `0x4200e34c`: `(L+R)>>1`, multiply by `volume / 43.3f` (`0x422D3333`), `>>8`, clamp to -128..127, store as unsigned 8-bit with an `0x80` midpoint. |
@@ -102,12 +115,17 @@ change.
   EXIT GAME entry exists only while a game is running (18 vs 17 items).  A
   new `gInGame` flag tracks this instead of `gPriv.rom`.
 * **Picker bookkeeping.**  After the picker the firmware stores
-  `(last_name_byte & 0xDF) == 'B'` in `shared_flags[2]` and clears the
-  high-window pointer at `shared_flags+8`.  Both are now reproduced.
-* **High-window re-read.**  When `shared_flags+8` is non-null after SGB
-  profile detection (Grand Theft Auto), the firmware re-runs
-  `fe_read_rom_to_ram` with the `0x3c07edb4` sector map.  The reconstruction
-  now re-runs the loader as well.
+  `(last_name_byte & 0xDF) == 'B'` in `shared_flags[2]` and clears the u32 at
+  `shared_flags+8` (`s32i zero, shared_flags, 8` at `0x42011ebc`).  The
+  reconstruction does both.
+* **Vestigial high-window re-read.**  `app2.elf` still contains the immediate
+  re-read at `0x4201216e`: when `shared_flags+8` is non-null it closes the ROM,
+  calls `fe_read_rom_to_ram` again and keeps the new pointer.  Its loader also
+  has the per-sector preload branch gated on the same u32 (`0x4200f617`).
+  Unlike `app_new.elf`, no profile in this build writes that pointer (the GTA
+  entry only sets `shared_flags[4]`) and the picker clears it, so the branch is
+  unreachable.  The reconstruction keeps the re-read and preload for fidelity,
+  but allocates no high window and ships no `resources/rom_mmap.h`.
 * **"Locked ON" message.**  Line 2 uses colour `0x0000FFE0`, not white.
 * **Volume hotkeys.**  The audio task reads `gApuVolume`, but the hotkey
   handler only updated `gVolume`, so `;`/`.`/`/`/`,` never changed the audible
@@ -184,14 +202,52 @@ change.
   (`0x4201060b` / `0x42011c27`, `0xC350` us).  Short entries leave the
   marquee idle.
 
-### `src/rom_cache.cpp` and `resources/rom_mmap.h`
+### `src/rom_cache.cpp` (re-audited against `app2.elf`)
 
-* Added the high-window path: when `shared_flags+8` is non-null, the loader
-  reads the sectors named by the `0x3c07edb4` table into the high window,
-  fills `sectorMap` with those slot numbers, and returns the window base.
-  The 4096-byte map is extracted verbatim into `resources/rom_mmap.h`.
-* The normal path still reads `min(file_size, 0x1dc00)` bytes and builds the
-  linear 119-slot map.
+The previous code mixed the `app_new.elf` Grand Theft Auto high-window
+experiment into the cache.  The high-window reads and the second cache base
+are not present in `app2.elf`; only the dormant preload gate survives.  The
+following were corrected:
+
+* **High-window reads removed.**  `fe_gb_rom_read` (`0x42003144`),
+  `fe_gb_rom_read16` (`0x4200318c`), `fe_gb_rom_read32` (`0x420031fc`) and
+  `fe_read_rom_to_ram` (`0x4200f504`) have no `0x77`+ branch to a second ROM
+  image.  Any sector-map value >= `0x77` (including `0xff`) is a cache miss.
+  `resources/rom_mmap.h` was deleted; `0x3c07edb4` is SGB border data in this
+  build, not a sector map.  `app_new.elf`'s high window indexed an embedded
+  GTA image at `0x3c09ddb4` (a different table), and `app2.elf` contains
+  neither.
+* **Correct miss algorithm.**  `fe_rom_cache_miss` (`0x420030b4`) ages and
+  scans **all 119** slots (hardware `loop` count 119) starting at
+  `fe_rom_cache_next`, picks the lowest age and evicts it.  Because 119 steps
+  return to the start, `next` is not advanced by a miss.  The old code aged
+  only one round-robin slot.
+* **Correct per-frame scan.**  `fe_rom_cache_lru_scan` (`0x42003288`) ages
+  **29** slots per frame (`kCacheScanSlots`), not one, and only updates
+  `min_age`/`victim` when it finds a lower age.  `fe_emulator_main` calls it
+  once per emulated frame (`0x4201255a`).
+* **Correct loader bookkeeping.**  The normal path in `fe_read_rom_to_ram`
+  reads `min(file_size, 0x1dc00)` bytes and then maps **all 119** slots
+  (`sectors[i] = i`, `sectorMap[i] = i`), clears the 119 ages, clears the six
+  `fe_rom_stat0..5` counters and resets `next = victim = 0`,
+  `min_age = 0x7fffffff`.  The old code mapped only `ceil(size / 1024)`
+  entries.  The dormant `shared_flags+8` branch is still mirrored: it
+  preloads the first 119 *unmapped* sectors one at a time, exactly like the
+  firmware.  `app2.elf` only ever stores zero there (picker clear), so the
+  branch cannot run; `app_new.elf` is the build whose GTA profile made it
+  live by writing the embedded-image pointer.
+* **16/32-bit fast paths.**  `fe_gb_rom_read16`/`32` now do the aligned
+  sector-cache load the firmware does, including the `ages[slot] = 0xffff`
+  hit and the byte-wise fallback when the value crosses a 1 KiB boundary or
+  the sector is not cached.  `fe_gb_rom_read32`'s slow path is
+  `read16(addr) | read16(addr+2) << 16`.
+* **Scratch allocator.**  `fe_rom_scratch_alloc` (`0x42003034`) does not
+  align its bump cursor; the reconstruction now matches.
+* **Error dialogs.**  `fe_read_rom_to_ram` shows the firmware's red "ERROR"
+  message box for `Cannot open file`, `File size is 0` and `Unexpected EOF`,
+  and holds it for `0x5E9AC0` us (6.2 s).
+
+### `src/rom_cache.cpp` (previous audit notes)
 
 ### `src/audio_task.cpp`
 
@@ -227,12 +283,14 @@ These are not byte-identical, either because the firmware data cannot be
 shipped or because the behaviour is expressed through a different library
 ABI.
 
-1. **Built-in high ROM image.**  The firmware embeds a ~119 KiB ROM image at
-   `0x3c09ddb4` (title `"GRAND THEFTAOAE"` at `0x3c09dee8`).  The
-   reconstruction does not ship that image; the high-window path instead
-   fills the PSRAM window from the selected file using the same
-   `0x3c07edb4` map.  A truly file-less built-in launch therefore needs that
-   data to be supplied separately.
+1. **High window / embedded GTA ROM (app_new only).**  `app_new.elf` embeds a
+   ~119 KiB ROM image at `0x3c09ddb4` and its Grand Theft Auto profile writes
+   that address to `shared_flags+8`, making the loader's high-window path
+   live.  `app2.elf` — the build this reconstruction targets — contains
+   neither the image nor that profile write, and its cache readers have no
+   high-window branch.  Nothing needs to be shipped for `app2`; reproducing
+   the `app_new` behaviour would require adding the image, the `0x3c07edb4`
+   map and the profile pointer write.
 2. **Save states.**  The original used version 4 with hard-coded offsets
    into the old `gb_s`; the reconstruction serialises the current struct by
    named members.  `.qsv` files are compatible with this build, not with the
@@ -274,9 +332,10 @@ ABI.
   mono samples split across the stereo channels.  The reconstruction now
   passes `stereo = false`, trading byte-for-byte fidelity for working audio;
   this is a deliberate deviation from the firmware's bug.
-* **Embedded ROM image.**  The GTA high-window data at `0x3c09ddb4` is a
-  complete ROM image in `.rodata`, not a cache window.  This is unusual and
-  may be a licensing/cleanup concern.
+* **Embedded ROM image (app_new only).**  In `app_new.elf` the GTA
+  high-window data at `0x3c09ddb4` is a complete ROM image in `.rodata`, not a
+  cache window.  `app2.elf` does not contain it (its `.flash.rodata` ends at
+  `0x3c09888c`), so this is a note about the later build, not the target.
 * **Force-compat bookkeeping.**  The firmware uses `fe_emulator_status` bit
   `0x02` for the forced-compatibility state and bit `0x01` for the
   interlace state; the earlier reconstruction had these swapped.

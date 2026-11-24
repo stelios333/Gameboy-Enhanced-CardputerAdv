@@ -67,13 +67,13 @@ void drawSplash()
 
     // fe_emulator_main fades the title in from black to white one 8-bit step
     // per channel at a time: c += 0x00010101 until c == 0x01010100 (256
-    // steps). Each step yields for one tick and then waits 5 ms.
+    // steps). Each step yields for one tick and then waits 3 ms.
+    setFontSize(0x40);
     for (uint32_t c = 0; c != 0x01010100u; c += 0x00010101u) {
         d.setTextColor(rgb888ToRgb565(c));
-        setFontSize(0x40);
         d.drawString("Gameboy Emulator", 0x16, 0x2D);
         vTaskDelay(1);
-        delayMicroseconds(5000);
+        delayMicroseconds(3000);
     }
 
     d.setTextColor(0xFFFF);
@@ -81,7 +81,7 @@ void drawSplash()
     snprintf(version, sizeof(version), "ver %d.%d.%02d", 0, 0x4F, 0x42);
     setFontSize(0x48);
     d.drawString(version, 0xA0, 0x5A);
-    delayMicroseconds(2500000);
+    delay(1000);
 
     // Fade back out with a -= 0x00020202 step until the running colour wraps
     // to 0xFFFEFEFF (128 steps). The firmware does not delay inside this
@@ -112,7 +112,9 @@ void showVolumeMessage()
         snprintf(text, sizeof(text), "%d%%", (gVolume * 100) / 0x7F);
         messageBoxDraw(-15, " Volume ", text, 0xFFFF, 0xFFE0, 2, 2, 4);
     }
+    M5.Speaker.setVolume(0);
     delay(kDelayVolumeMsgUs / 1000);
+    M5.Speaker.setVolume(255);
     messageBoxClear(-15, " Volume ", nullptr, 2, 2, 4, 0);
 }
 

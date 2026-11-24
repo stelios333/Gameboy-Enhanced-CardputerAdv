@@ -178,11 +178,13 @@ void filePicker(char* out, size_t outSize)
             return;
         }
 
-        if (selected < 0) selected = static_cast<int>(names.size()) - 1;
-        if (selected >= static_cast<int>(names.size())) selected = 0;
-
         Marquee pickerMarquee;
-        drawPicker(currentDir, names, isDir, selected, pickerMarquee);
+        auto lDrawPicker = [&]() {
+            if (selected < 0) selected = static_cast<int>(names.size()) - 1;
+            if (selected >= static_cast<int>(names.size())) selected = 0;
+            drawPicker(currentDir, names, isDir, selected, pickerMarquee);
+        };
+        lDrawPicker();
         waitKeyRelease();
 
         bool done = false;
@@ -228,16 +230,13 @@ void filePicker(char* out, size_t outSize)
             for (char key : state.word) {
                 if (key == ';' || key == static_cast<char>(gSettings.keyUp)) {
                     selected--;
-                    delay(kDelayKeyRepeatUs / 1000);
-                    done = true;
-                    break;
+                    lDrawPicker();
                 }
                 if (key == '.' || key == static_cast<char>(gSettings.keyDown)) {
                     selected++;
-                    delay(kDelayKeyRepeatUs / 1000);
-                    done = true;
-                    break;
+                    lDrawPicker();
                 }
+                waitKeyRelease();
             }
         }
     }

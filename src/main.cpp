@@ -133,7 +133,6 @@ void setup()
     // 0x01312D00 stored into the Bus_SPI config at fe_setup+0xa8).
     M5Cardputer.Display.setRotation(0);
     M5Cardputer.Display.setColorDepth(16);
-    M5Cardputer.Display.setSwapBytes(true);
     if (auto* panel = M5Cardputer.Display.getPanel()) {
         if (auto* bus = panel->getBus()) {
             bus->setClock(80000000);

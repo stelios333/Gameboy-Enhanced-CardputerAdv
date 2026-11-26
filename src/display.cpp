@@ -43,7 +43,7 @@ uint16_t rgb888ToRgb565(uint32_t rgb)
 void updatePalette()
 {
     for (int i = 0; i < 12; i++) {
-        gPalette565[i] = rgb888ToRgb565(gActivePalette[i]);
+        gPalette565[i] = __builtin_bswap16(rgb888ToRgb565(gActivePalette[i]));
     }
     // Keep the display state's active palette in sync.
     memcpy(gDisplay.palette, gPalette565, sizeof(gPalette565));
@@ -63,7 +63,7 @@ void lcdDrawLine(gb_s* gb, const uint8_t* pixels, const uint_fast8_t line)
 
     if (gb && gb->cgb.cgbMode) {
         for (int x = 0; x < kLcdWidth; x++) {
-            dst[x] = gb->cgb.fixPalette[pixels[x]];
+            dst[x] = __builtin_bswap16(gb->cgb.fixPalette[pixels[x]]);
         }
     } else if (gDisplay.twelveColour) {
         for (int x = 0; x < kLcdWidth; x++) {
